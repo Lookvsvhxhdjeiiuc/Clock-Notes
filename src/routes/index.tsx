@@ -1,8 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, ImagePlus, StickyNote, Clock3 } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  ImagePlus,
+  StickyNote,
+  Clock3,
+  Play,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  addMedia,
+  deleteMedia,
+  listMedia,
+  type MediaKind,
+} from "@/lib/media-db";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -13,7 +26,10 @@ export const Route = createFileRoute("/")({
         content:
           "A calm, modern clock dashboard with quick notes and a personal photo wall. Everything stays on your device.",
       },
-      { property: "og:title", content: "Nightstand — Modern Clock, Notes & Photos" },
+      {
+        property: "og:title",
+        content: "Nightstand — Modern Clock, Notes & Photos",
+      },
       {
         property: "og:description",
         content:
@@ -25,16 +41,18 @@ export const Route = createFileRoute("/")({
 });
 
 type Note = { id: string; text: string; createdAt: number };
-type Photo = { id: string; src: string; name: string };
+type MediaItem = { id: string; url: string; name: string; kind: MediaKind };
 
 const NOTES_KEY = "nightstand.notes";
-const PHOTOS_KEY = "nightstand.photos";
 
 // crypto.randomUUID() only works in a "secure context" (https or localhost).
 // This falls back to a manual generator so it also works over plain http
 // (e.g. opening the dev server from another device via a LAN IP).
 function makeId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     try {
       return crypto.randomUUID();
     } catch {
@@ -117,8 +135,8 @@ function ClockPanel() {
 
       <div className="mt-8 h-px w-full bg-border" />
       <p className="mt-4 max-w-md text-sm text-muted-foreground">
-        Your notes and photos live right here beside the time — saved privately on this
-        device.
+        Your notes and photos live right here beside the time — saved privately
+        on this device.
       </p>
     </section>
   );
@@ -166,7 +184,11 @@ function NotesPanel() {
           rows={3}
           className="resize-none rounded-xl border-border bg-secondary/40 text-sm placeholder:text-muted-foreground"
         />
-        <Button onClick={add} disabled={!draft.trim()} className="self-start rounded-full">
+        <Button
+          onClick={add}
+          disabled={!draft.trim()}
+          className="self-start rounded-full"
+        >
           <Plus className="size-4" aria-hidden="true" />
           Add note
         </Button>
@@ -183,7 +205,9 @@ function NotesPanel() {
             key={note.id}
             className="group rounded-xl border border-border bg-secondary/30 p-4 transition-colors hover:border-primary/40"
           >
-            <p className="text-sm whitespace-pre-wrap text-foreground">{note.text}</p>
+            <p className="text-sm whitespace-pre-wrap text-foreground">
+              {note.text}
+            </p>
             <div className="mt-3 flex items-center justify-between">
               <time className="label-caps text-[0.6rem]">
                 {new Date(note.createdAt).toLocaleString(undefined, {
@@ -194,9 +218,11 @@ function NotesPanel() {
                 })}
               </time>
               <button
-                onClick={() => setNotes((p) => p.filter((n) => n.id !== note.id))}
+                onClick={() =>
+                  setNotes((p) => p.filter((n) => n.id !== note.id))
+                }
                 aria-label="Delete note"
-                className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
+                className="text-muted-foreground opacity-70 transition-opacity hover:text-destructive hover:opacity-100"
               >
                 <Trash2 className="size-4" aria-hidden="true" />
               </button>
@@ -208,30 +234,67 @@ function NotesPanel() {
   );
 }
 
-function PhotosPanel() {
-  const [photos, setPhotos] = useState<Photo[]>([]);
+function MediaPanel() {
+  const [items, setItems] = useState<MediaItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => setPhotos(load<Photo>(PHOTOS_KEY)), []);
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(PHOTOS_KEY, JSON.stringify(photos));
-    }
-  }, [photos]);
+    listMedia()
+      .then((stored) => {
+        setItems(
+          stored.map((m) => ({
+            id: m.id,
+            url: URL.createObjectURL(m.blob),
+            name: m.name,
+            kind: m.kind,
+          })),
+        );
+      })
+      .catch(() => setError("Couldn't load saved media on this device."))
+      .finally(() => setLoaded(true));
+    // Object URLs are released on full page unload; nothing to clean up
+    // per-render since the list only changes via add/remove below.
+  }, []);
 
   const onFiles = useCallback((files: FileList | null) => {
     if (!files) return;
+    setError(null);
     Array.from(files)
-      .filter((f) => f.type.startsWith("image/"))
-      .forEach((file) => {
-        const reader = new FileReader();
-        reader.onload = () =>
-          setPhotos((prev) => [
-            { id: makeId(), src: String(reader.result), name: file.name },
+      .filter((f) => f.type.startsWith("image/") || f.type.startsWith("video/"))
+      .forEach(async (file) => {
+        const id = makeId();
+        const kind: MediaKind = file.type.startsWith("video/")
+          ? "video"
+          : "image";
+        try {
+          await addMedia({
+            id,
+            name: file.name,
+            kind,
+            mimeType: file.type,
+            blob: file,
+            createdAt: Date.now(),
+          });
+          setItems((prev) => [
+            { id, url: URL.createObjectURL(file), name: file.name, kind },
             ...prev,
           ]);
-        reader.readAsDataURL(file);
+        } catch {
+          setError(
+            "Couldn't save that file — your device may be out of storage.",
+          );
+        }
       });
+  }, []);
+
+  const remove = useCallback((item: MediaItem) => {
+    deleteMedia(item.id).catch(() => {
+      /* local list is still updated below even if the DB delete races */
+    });
+    URL.revokeObjectURL(item.url);
+    setItems((prev) => prev.filter((x) => x.id !== item.id));
   }, []);
 
   return (
@@ -239,7 +302,7 @@ function PhotosPanel() {
       <header className="flex items-center justify-between">
         <span className="label-caps flex items-center gap-2">
           <ImagePlus className="size-3.5" aria-hidden="true" />
-          Photo wall
+          Media wall
         </span>
         <Button
           variant="secondary"
@@ -247,18 +310,20 @@ function PhotosPanel() {
           className="rounded-full"
           onClick={() => inputRef.current?.click()}
         >
-          Add photos
+          Add photos or videos
         </Button>
       </header>
 
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         multiple
         className="hidden"
         onChange={(e) => onFiles(e.target.files)}
       />
+
+      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
 
       <div
         onDragOver={(e) => e.preventDefault()}
@@ -268,30 +333,51 @@ function PhotosPanel() {
         }}
         className="mt-5"
       >
-        {photos.length === 0 ? (
+        {loaded && items.length === 0 ? (
           <button
             onClick={() => inputRef.current?.click()}
             className="w-full rounded-2xl border border-dashed border-border py-14 text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
           >
-            Drop images here or click to browse
+            Drop photos or videos here or click to browse
           </button>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {photos.map((photo) => (
+            {items.map((item) => (
               <figure
-                key={photo.id}
+                key={item.id}
                 className="group relative overflow-hidden rounded-2xl border border-border"
               >
-                <img
-                  src={photo.src}
-                  alt={photo.name}
-                  loading="lazy"
-                  className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
-                />
+                {item.kind === "video" ? (
+                  <>
+                    <video
+                      src={item.url}
+                      muted
+                      playsInline
+                      loop
+                      className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                      onMouseEnter={(e) => e.currentTarget.play()}
+                      onMouseLeave={(e) => e.currentTarget.pause()}
+                    />
+                    <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-background/70 p-1.5 backdrop-blur">
+                      <Play
+                        className="size-3 fill-current"
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </>
+                ) : (
+                  <img
+                    src={item.url}
+                    alt={item.name}
+                    loading="lazy"
+                    className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                  />
+                )}
+                {/* Always visible (not hover-only) so it's reachable on touch devices. */}
                 <button
-                  onClick={() => setPhotos((p) => p.filter((x) => x.id !== photo.id))}
-                  aria-label={`Remove ${photo.name}`}
-                  className="absolute top-2 right-2 rounded-full bg-background/70 p-2 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100 hover:text-destructive"
+                  onClick={() => remove(item)}
+                  aria-label={`Remove ${item.name}`}
+                  className="absolute top-2 right-2 rounded-full bg-background/70 p-2 opacity-80 backdrop-blur transition-opacity hover:opacity-100 hover:text-destructive"
                 >
                   <Trash2 className="size-3.5" aria-hidden="true" />
                 </button>
@@ -310,7 +396,7 @@ function Index() {
       <div className="grid gap-6 lg:grid-cols-[1.35fr_1fr]">
         <div className="flex flex-col gap-6">
           <ClockPanel />
-          <PhotosPanel />
+          <MediaPanel />
         </div>
         <NotesPanel />
       </div>
