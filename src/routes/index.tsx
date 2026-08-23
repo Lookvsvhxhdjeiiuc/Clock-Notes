@@ -7,6 +7,7 @@ import {
   useState,
   type TouchEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Plus,
   Trash2,
@@ -483,7 +484,12 @@ function Lightbox({
     touchStartX.current = null;
   };
 
-  return (
+  // Rendered via a portal straight into <body>: an ancestor card uses
+  // backdrop-filter (the "glass" look), and per the CSS spec that turns it
+  // into the containing block for any `position: fixed` descendant — which
+  // trapped this fullscreen preview inside the card instead of the viewport
+  // (most visible on mobile, where it showed cut off near the bottom).
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-xl"
       style={{
@@ -586,7 +592,8 @@ function Lightbox({
           </button>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
