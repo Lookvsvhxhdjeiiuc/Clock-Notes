@@ -1,5 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type TouchEvent,
+} from "react";
 import {
   Plus,
   Trash2,
@@ -7,6 +14,12 @@ import {
   StickyNote,
   Clock3,
   Play,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  Pencil,
+  Bell,
+  BellRing,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +27,7 @@ import {
   addMedia,
   deleteMedia,
   listMedia,
+  updateMediaCaption,
   type MediaKind,
 } from "@/lib/media-db";
 
@@ -40,8 +54,20 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-type Note = { id: string; text: string; createdAt: number };
-type MediaItem = { id: string; url: string; name: string; kind: MediaKind };
+type Note = {
+  id: string;
+  text: string;
+  createdAt: number;
+  reminderAt?: number | undefined;
+  notifiedAt?: number | undefined;
+};
+type MediaItem = {
+  id: string;
+  url: string;
+  name: string;
+  kind: MediaKind;
+  caption?: string | undefined;
+};
 
 const NOTES_KEY = "nightstand.notes";
 
@@ -142,9 +168,32 @@ function ClockPanel() {
   );
 }
 
+function formatReminder(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (sameDay) return `Today, ${time}`;
+  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${time}`;
+}
+
+// Local <input type="datetime-local"> value (no timezone conversion surprises).
+function toLocalInputValue(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function NotesPanel() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [draft, setDraft] = useState("");
+  const [reminderEditId, setReminderEditId] = useState<string | null>(null);
+  const [permission, setPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("unsupported");
 
   useEffect(() => setNotes(load<Note>(NOTES_KEY)), []);
   useEffect(() => {
@@ -152,6 +201,44 @@ function NotesPanel() {
       window.localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
     }
   }, [notes]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setPermission(Notification.permission);
+    }
+  }, []);
+
+  // Checks for due reminders while the app is open (tab or installed PWA)
+  // and fires a browser notification once per reminder.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setNotes((prev) => {
+        let changed = false;
+        const next = prev.map((n) => {
+          if (n.reminderAt && n.reminderAt <= now && !n.notifiedAt) {
+            changed = true;
+            if (typeof window !== "undefined" && "Notification" in window) {
+              if (Notification.permission === "granted") {
+                try {
+                  new Notification("Nightstand reminder", {
+                    body: n.text.slice(0, 140),
+                    tag: n.id,
+                  });
+                } catch {
+                  /* ignore — some browsers restrict Notification outside a service worker */
+                }
+              }
+            }
+            return { ...n, notifiedAt: now };
+          }
+          return n;
+        });
+        return changed ? next : prev;
+      });
+    }, 15_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const add = () => {
     const text = draft.trim();
@@ -163,6 +250,32 @@ function NotesPanel() {
     setDraft("");
   };
 
+  const setReminder = async (noteId: string, value: string) => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        const result = await Notification.requestPermission();
+        setPermission(result);
+      }
+    }
+    const ts = value ? new Date(value).getTime() : undefined;
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === noteId ? { ...n, reminderAt: ts, notifiedAt: undefined } : n,
+      ),
+    );
+    setReminderEditId(null);
+  };
+
+  const clearReminder = (noteId: string) => {
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === noteId
+          ? { ...n, reminderAt: undefined, notifiedAt: undefined }
+          : n,
+      ),
+    );
+  };
+
   return (
     <section className="glass flex flex-col rounded-3xl p-6">
       <header className="flex items-center justify-between">
@@ -172,6 +285,14 @@ function NotesPanel() {
         </span>
         <span className="text-xs text-muted-foreground">{notes.length}</span>
       </header>
+
+      {permission === "denied" && (
+        <p className="mt-3 rounded-lg bg-secondary/40 p-2 text-xs text-muted-foreground">
+          Notifications are blocked for this site, so reminders will only show
+          while Nightstand is open. Allow notifications in your browser's site
+          settings to get alerts in the background.
+        </p>
+      )}
 
       <div className="mt-4 flex flex-col gap-3">
         <Textarea
@@ -200,37 +321,272 @@ function NotesPanel() {
             No notes yet.
           </li>
         )}
-        {notes.map((note) => (
-          <li
-            key={note.id}
-            className="group rounded-xl border border-border bg-secondary/30 p-4 transition-colors hover:border-primary/40"
-          >
-            <p className="text-sm whitespace-pre-wrap text-foreground">
-              {note.text}
-            </p>
-            <div className="mt-3 flex items-center justify-between">
-              <time className="label-caps text-[0.6rem]">
-                {new Date(note.createdAt).toLocaleString(undefined, {
-                  month: "short",
-                  day: "numeric",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </time>
-              <button
-                onClick={() =>
-                  setNotes((p) => p.filter((n) => n.id !== note.id))
-                }
-                aria-label="Delete note"
-                className="text-muted-foreground opacity-70 transition-opacity hover:text-destructive hover:opacity-100"
-              >
-                <Trash2 className="size-4" aria-hidden="true" />
-              </button>
-            </div>
-          </li>
-        ))}
+        {notes.map((note) => {
+          const isOverdue = !!note.reminderAt && note.reminderAt <= Date.now();
+          const editingReminder = reminderEditId === note.id;
+          return (
+            <li
+              key={note.id}
+              className={`group rounded-xl border p-4 transition-colors ${
+                isOverdue
+                  ? "border-primary/60 bg-primary/10"
+                  : "border-border bg-secondary/30 hover:border-primary/40"
+              }`}
+            >
+              <p className="text-sm whitespace-pre-wrap text-foreground">
+                {note.text}
+              </p>
+
+              {note.reminderAt && !editingReminder && (
+                <button
+                  onClick={() => setReminderEditId(note.id)}
+                  className={`mt-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.7rem] ${
+                    isOverdue
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary text-muted-foreground"
+                  }`}
+                >
+                  <BellRing className="size-3" aria-hidden="true" />
+                  {formatReminder(note.reminderAt)}
+                </button>
+              )}
+
+              {editingReminder && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <input
+                    type="datetime-local"
+                    defaultValue={
+                      note.reminderAt ? toLocalInputValue(note.reminderAt) : ""
+                    }
+                    onChange={(e) => setReminder(note.id, e.target.value)}
+                    className="rounded-lg border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground"
+                    autoFocus
+                  />
+                  {note.reminderAt && (
+                    <button
+                      onClick={() => {
+                        clearReminder(note.id);
+                        setReminderEditId(null);
+                      }}
+                      className="text-xs text-muted-foreground hover:text-destructive"
+                    >
+                      Remove
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setReminderEditId(null)}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+
+              <div className="mt-3 flex items-center justify-between">
+                <time className="label-caps text-[0.6rem]">
+                  {new Date(note.createdAt).toLocaleString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </time>
+                <div className="flex items-center gap-3">
+                  {!note.reminderAt && (
+                    <button
+                      onClick={() => setReminderEditId(note.id)}
+                      aria-label="Set reminder"
+                      className="text-muted-foreground opacity-70 transition-opacity hover:text-primary hover:opacity-100"
+                    >
+                      <Bell className="size-4" aria-hidden="true" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() =>
+                      setNotes((p) => p.filter((n) => n.id !== note.id))
+                    }
+                    aria-label="Delete note"
+                    className="text-muted-foreground opacity-70 transition-opacity hover:text-destructive hover:opacity-100"
+                  >
+                    <Trash2 className="size-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </section>
+  );
+}
+
+function Lightbox({
+  items,
+  index,
+  onClose,
+  onNavigate,
+  onCaptionChange,
+}: {
+  items: MediaItem[];
+  index: number;
+  onClose: () => void;
+  onNavigate: (nextIndex: number) => void;
+  onCaptionChange: (id: string, caption: string) => void;
+}) {
+  const item = items[index];
+  const touchStartX = useRef<number | null>(null);
+  const [editingCaption, setEditingCaption] = useState(false);
+  const [captionDraft, setCaptionDraft] = useState(item?.caption ?? "");
+
+  useEffect(() => {
+    setCaptionDraft(item?.caption ?? "");
+    setEditingCaption(false);
+    // Deliberately keyed on id only — this resets the draft when navigating
+    // to a different item, not on every caption keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id]);
+
+  // Lock page scroll while the fullscreen preview is open.
+  useEffect(() => {
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft" && index > 0) onNavigate(index - 1);
+      if (e.key === "ArrowRight" && index < items.length - 1)
+        onNavigate(index + 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, items.length, onClose, onNavigate]);
+
+  if (!item) return null;
+
+  const handleTouchStart = (e: TouchEvent) => {
+    touchStartX.current = e.touches[0]?.clientX ?? null;
+  };
+  const handleTouchEnd = (e: TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const endX = e.changedTouches[0]?.clientX;
+    if (endX === undefined) return;
+    const delta = endX - touchStartX.current;
+    const SWIPE_THRESHOLD = 50;
+    if (delta > SWIPE_THRESHOLD && index > 0) onNavigate(index - 1);
+    else if (delta < -SWIPE_THRESHOLD && index < items.length - 1)
+      onNavigate(index + 1);
+    touchStartX.current = null;
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-background/95 backdrop-blur-xl"
+      style={{
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      <div className="flex items-center justify-between px-4 py-3 sm:px-6">
+        <span className="label-caps text-muted-foreground">
+          {index + 1} / {items.length}
+        </span>
+        <button
+          onClick={onClose}
+          aria-label="Close preview"
+          className="rounded-full bg-secondary/60 p-2.5 text-foreground hover:text-primary"
+        >
+          <X className="size-5" aria-hidden="true" />
+        </button>
+      </div>
+
+      <div
+        className="relative flex flex-1 items-center justify-center px-2 pb-2"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+      >
+        {index > 0 && (
+          <button
+            onClick={() => onNavigate(index - 1)}
+            aria-label="Previous"
+            className="absolute left-2 z-10 hidden rounded-full bg-secondary/60 p-2 text-foreground hover:text-primary sm:block"
+          >
+            <ChevronLeft className="size-6" aria-hidden="true" />
+          </button>
+        )}
+
+        {item.kind === "video" ? (
+          <video
+            src={item.url}
+            controls
+            autoPlay
+            playsInline
+            className="max-h-full max-w-full rounded-xl"
+          />
+        ) : (
+          <img
+            src={item.url}
+            alt={item.caption || item.name}
+            className="max-h-full max-w-full rounded-xl object-contain"
+          />
+        )}
+
+        {index < items.length - 1 && (
+          <button
+            onClick={() => onNavigate(index + 1)}
+            aria-label="Next"
+            className="absolute right-2 z-10 hidden rounded-full bg-secondary/60 p-2 text-foreground hover:text-primary sm:block"
+          >
+            <ChevronRight className="size-6" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+
+      <div className="px-4 pb-5 sm:px-6">
+        {editingCaption ? (
+          <div className="flex items-center gap-2">
+            <input
+              autoFocus
+              value={captionDraft}
+              onChange={(e) => setCaptionDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  onCaptionChange(item.id, captionDraft.trim());
+                  setEditingCaption(false);
+                }
+              }}
+              placeholder="Add a caption…"
+              className="w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm text-foreground"
+            />
+            <Button
+              size="sm"
+              className="rounded-full"
+              onClick={() => {
+                onCaptionChange(item.id, captionDraft.trim());
+                setEditingCaption(false);
+              }}
+            >
+              Save
+            </Button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setEditingCaption(true)}
+            className="flex w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"
+          >
+            <Pencil className="size-3.5 shrink-0" aria-hidden="true" />
+            {item.caption || "Add a caption…"}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -238,6 +594,7 @@ function MediaPanel() {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -249,6 +606,7 @@ function MediaPanel() {
             url: URL.createObjectURL(m.blob),
             name: m.name,
             kind: m.kind,
+            caption: m.caption,
           })),
         );
       })
@@ -297,6 +655,13 @@ function MediaPanel() {
     setItems((prev) => prev.filter((x) => x.id !== item.id));
   }, []);
 
+  const setCaption = useCallback((id: string, caption: string) => {
+    updateMediaCaption(id, caption).catch(() => {
+      /* caption still updates locally even if the DB write races */
+    });
+    setItems((prev) => prev.map((x) => (x.id === id ? { ...x, caption } : x)));
+  }, []);
+
   return (
     <section className="glass rounded-3xl p-6">
       <header className="flex items-center justify-between">
@@ -342,37 +707,50 @@ function MediaPanel() {
           </button>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {items.map((item) => (
+            {items.map((item, i) => (
               <figure
                 key={item.id}
                 className="group relative overflow-hidden rounded-2xl border border-border"
               >
-                {item.kind === "video" ? (
-                  <>
-                    <video
-                      src={item.url}
-                      muted
-                      playsInline
-                      loop
-                      className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
-                      onMouseEnter={(e) => e.currentTarget.play()}
-                      onMouseLeave={(e) => e.currentTarget.pause()}
-                    />
-                    <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-background/70 p-1.5 backdrop-blur">
-                      <Play
-                        className="size-3 fill-current"
-                        aria-hidden="true"
+                <button
+                  onClick={() => setOpenIndex(i)}
+                  className="block w-full"
+                  aria-label={`Open ${item.caption || item.name}`}
+                >
+                  {item.kind === "video" ? (
+                    <>
+                      <video
+                        src={item.url}
+                        muted
+                        playsInline
+                        loop
+                        className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                        onMouseEnter={(e) => e.currentTarget.play()}
+                        onMouseLeave={(e) => e.currentTarget.pause()}
                       />
-                    </span>
-                  </>
-                ) : (
-                  <img
-                    src={item.url}
-                    alt={item.name}
-                    loading="lazy"
-                    className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
-                  />
+                      <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-background/70 p-1.5 backdrop-blur">
+                        <Play
+                          className="size-3 fill-current"
+                          aria-hidden="true"
+                        />
+                      </span>
+                    </>
+                  ) : (
+                    <img
+                      src={item.url}
+                      alt={item.caption || item.name}
+                      loading="lazy"
+                      className="aspect-square w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    />
+                  )}
+                </button>
+
+                {item.caption && (
+                  <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-background/85 to-transparent px-2.5 pt-4 pb-1.5 text-[0.7rem] text-foreground">
+                    {item.caption}
+                  </span>
                 )}
+
                 {/* Always visible (not hover-only) so it's reachable on touch devices. */}
                 <button
                   onClick={() => remove(item)}
@@ -386,6 +764,16 @@ function MediaPanel() {
           </div>
         )}
       </div>
+
+      {openIndex !== null && items[openIndex] && (
+        <Lightbox
+          items={items}
+          index={openIndex}
+          onClose={() => setOpenIndex(null)}
+          onNavigate={setOpenIndex}
+          onCaptionChange={setCaption}
+        />
+      )}
     </section>
   );
 }

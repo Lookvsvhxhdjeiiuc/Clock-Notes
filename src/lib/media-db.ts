@@ -11,6 +11,7 @@ export type StoredMedia = {
   kind: MediaKind;
   mimeType: string;
   blob: Blob;
+  caption?: string | undefined;
   createdAt: number;
 };
 
@@ -51,6 +52,27 @@ export async function deleteMedia(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function updateMediaCaption(
+  id: string,
+  caption: string,
+): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const record = getReq.result as StoredMedia | undefined;
+      if (record) {
+        record.caption = caption;
+        store.put(record);
+      }
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
