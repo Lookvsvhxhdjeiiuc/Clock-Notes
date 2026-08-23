@@ -80,7 +80,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     head: () => ({
       meta: [
         { charSet: "utf-8" },
-        { name: "viewport", content: "width=device-width, initial-scale=1" },
+        {
+          name: "viewport",
+          content:
+            "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no",
+        },
         { title: "Nightstand — Modern Clock, Notes & Photos" },
         {
           name: "description",
@@ -158,6 +162,18 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  // Trackpad pinch-zoom (and Ctrl+scroll-wheel zoom) fires as a wheel event
+  // with ctrlKey set — this blocks that gesture so laptop trackpads can't
+  // accidentally zoom the page. Keyboard zoom (Ctrl+/Ctrl-) is left alone,
+  // since browsers don't allow pages to intercept that.
+  useEffect(() => {
+    const preventPinchZoom = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    document.addEventListener("wheel", preventPinchZoom, { passive: false });
+    return () => document.removeEventListener("wheel", preventPinchZoom);
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

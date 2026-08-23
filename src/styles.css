@@ -40,7 +40,8 @@
   --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --shadow-glass: 0 1px 0 0 oklch(1 0 0 / 8%) inset, 0 24px 60px -30px oklch(0 0 0 / 70%);
+  --shadow-glass:
+    0 1px 0 0 oklch(1 0 0 / 8%) inset, 0 24px 60px -30px oklch(0 0 0 / 70%);
   --shadow-lift: 0 30px 70px -35px oklch(0 0 0 / 85%);
 }
 
@@ -83,9 +84,20 @@
     color: var(--color-foreground);
     font-family: var(--font-sans);
     background-image:
-      radial-gradient(70rem 40rem at 15% -10%, var(--color-glow), transparent 70%),
-      radial-gradient(60rem 40rem at 110% 20%, oklch(0.62 0.11 196 / 14%), transparent 70%);
+      radial-gradient(
+        70rem 40rem at 15% -10%,
+        var(--color-glow),
+        transparent 70%
+      ),
+      radial-gradient(
+        60rem 40rem at 110% 20%,
+        oklch(0.62 0.11 196 / 14%),
+        transparent 70%
+      );
     background-attachment: fixed;
+    /* Blocks double-tap-to-zoom on iOS Safari (belt-and-braces alongside the
+       viewport meta tag, which some older iOS versions don't fully honor). */
+    touch-action: manipulation;
   }
 }
 
